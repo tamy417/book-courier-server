@@ -28,6 +28,7 @@ async function run() {
 
     const usersCollection = client.db("bookCourierDB").collection("users");
     const booksCollection = client.db("bookCourierDB").collection("books");
+    const ordersCollection = client.db("bookCourierDB").collection("orders");
 
     // test route
     app.get("/", (req, res) => {
@@ -77,6 +78,31 @@ async function run() {
     app.get("/books", async (req, res) => {
       const query = { status: "published" };
       const result = await booksCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    // place an order
+    app.post("/orders", async (req, res) => {
+      const order = req.body;
+
+      if (!order.bookId || !order.userEmail) {
+        return res.status(400).send({ message: "Invalid order data" });
+      }
+
+      const newOrder = {
+        bookId: order.bookId,
+        bookTitle: order.bookTitle,
+        price: order.price,
+        userName: order.userName,
+        userEmail: order.userEmail,
+        phone: order.phone,
+        address: order.address,
+        orderStatus: "pending",
+        paymentStatus: "unpaid",
+        orderDate: new Date(),
+      };
+
+      const result = await ordersCollection.insertOne(newOrder);
       res.send(result);
     });
   } finally {
