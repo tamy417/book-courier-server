@@ -50,6 +50,28 @@ async function run() {
 
       res.send(result);
     });
+
+    // add a book
+    app.post("/books", async (req, res) => {
+      const book = req.body;
+
+      if (!book.title || !book.author || !book.price) {
+        return res.status(400).send({ message: "Missing required fields" });
+      }
+
+      const newBook = {
+        title: book.title,
+        author: book.author,
+        image: book.image || "",
+        price: book.price,
+        status: book.status || "published", // published / unpublished
+        librarianEmail: book.librarianEmail,
+        createdAt: new Date(),
+      };
+
+      const result = await booksCollection.insertOne(newBook);
+      res.send(result);
+    });
   } finally {
   }
 }
