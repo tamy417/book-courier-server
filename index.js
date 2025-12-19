@@ -105,6 +105,15 @@ async function run() {
       const result = await ordersCollection.insertOne(newOrder);
       res.send(result);
     });
+
+    // get orders by user email
+    app.get("/orders", async (req, res) => {
+      const email = req.query.email;
+      const query = { userEmail: email };
+
+      const result = await ordersCollection.find(query).toArray();
+      res.send(result);
+    });
   } finally {
   }
 }
