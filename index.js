@@ -72,6 +72,13 @@ async function run() {
       const result = await booksCollection.insertOne(newBook);
       res.send(result);
     });
+
+    // get all published books
+    app.get("/books", async (req, res) => {
+      const query = { status: "published" };
+      const result = await booksCollection.find(query).toArray();
+      res.send(result);
+    });
   } finally {
   }
 }
