@@ -1,18 +1,59 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+const { MongoClient, ServerApiVersion } = require("mongodb");
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// middlewares
+// middleware
 app.use(cors());
 app.use(express.json());
 
-// test route
-app.get("/", (req, res) => {
-  res.send("BookCourier Server is running");
+// MongoDB connection
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.j4lmmay.mongodb.net/?appName=Cluster0`;
+
+const client = new MongoClient(uri, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
 });
+
+async function run() {
+  try {
+    await client.connect();
+    console.log("MongoDB connected successfully");
+
+    const usersCollection = client.db("bookCourierDB").collection("users");
+    const booksCollection = client.db("bookCourierDB").collection("books");
+
+    // test route
+    app.get("/", (req, res) => {
+      res.send("BookCourier Server Running");
+    });
+
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+
+      if (!user.email) {
+        return res.status(400).send({ message: "Email is required" });
+      }
+
+      const result = await usersCollection.insertOne({
+        name: user.name || "",
+        email: user.email,
+        role: "user",
+        createdAt: new Date(),
+      });
+
+      res.send(result);
+    });
+  } finally {
+  }
+}
+run().catch(console.dir);
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
