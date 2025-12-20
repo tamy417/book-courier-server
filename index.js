@@ -1,6 +1,13 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+const admin = require("firebase-admin");
+admin.initializeApp({
+  credential: admin.credential.cert(
+    require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
+  ),
+});
+
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const app = express();
@@ -21,6 +28,24 @@ const client = new MongoClient(uri, {
   },
 });
 
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).send({ message: "Invalid token" });
+  }
+};
+
 async function run() {
   try {
     await client.connect();
@@ -29,6 +54,10 @@ async function run() {
     const usersCollection = client.db("bookCourierDB").collection("users");
     const booksCollection = client.db("bookCourierDB").collection("books");
     const ordersCollection = client.db("bookCourierDB").collection("orders");
+    const wishlistCollection = client
+      .db("bookCourierDB")
+      .collection("wishlist");
+    const reviewsCollection = client.db("bookCourierDB").collection("reviews");
 
     // test route
     app.get("/", (req, res) => {
@@ -82,7 +111,7 @@ async function run() {
     });
 
     // place an order
-    app.post("/orders", async (req, res) => {
+    app.post("/orders", verifyToken, async (req, res) => {
       const order = req.body;
 
       if (!order.bookId || !order.userEmail) {
@@ -107,7 +136,11 @@ async function run() {
     });
 
     // get orders by user email
-    app.get("/orders", async (req, res) => {
+    app.get("/orders", verifyToken, async (req, res) => {
+      if (req.user.email !== req.query.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
       const email = req.query.email;
       const query = { userEmail: email };
 
@@ -131,6 +164,145 @@ async function run() {
       };
 
       const result = await ordersCollection.updateOne(query, updateDoc);
+      res.send(result);
+    });
+
+    // update order status (librarian)
+    app.patch("/orders/status/:id", async (req, res) => {
+      const id = req.params.id;
+      const { status } = req.body;
+
+      const allowedStatus = ["shipped", "delivered"];
+      if (!allowedStatus.includes(status)) {
+        return res.status(400).send({ message: "Invalid status" });
+      }
+
+      const query = { _id: new ObjectId(id) };
+      const updateDoc = { $set: { orderStatus: status } };
+
+      const result = await ordersCollection.updateOne(query, updateDoc);
+
+      if (result.matchedCount === 0) {
+        return res.status(404).send({ message: "Order not found" });
+      }
+
+      if (result.modifiedCount === 0) {
+        return res.send({
+          message: "Order status already set",
+          acknowledged: true,
+        });
+      }
+
+      res.send({ message: "Order status updated", acknowledged: true });
+    });
+
+    // Delete related orders
+    app.delete("/books/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+
+      const result = await booksCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      await ordersCollection.deleteMany({ bookId: id });
+
+      res.send(result);
+    });
+
+    // Publish / Unpublish book (Admin)
+    app.patch(
+      "/books/status/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const { status } = req.body;
+
+        if (!["published", "unpublished"].includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const result = await booksCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } }
+        );
+
+        res.send(result);
+      }
+    );
+
+    // Add to wishlist
+    app.post("/wishlist", verifyToken, async (req, res) => {
+      const item = req.body;
+
+      const result = await wishlistCollection.insertOne({
+        bookId: item.bookId,
+        userEmail: req.user.email,
+        addedAt: new Date(),
+      });
+
+      res.send(result);
+    });
+
+    // Get user wishlist
+    app.get("/wishlist", verifyToken, async (req, res) => {
+      const email = req.user.email;
+
+      const result = await wishlistCollection
+        .find({ userEmail: email })
+        .toArray();
+      res.send(result);
+    });
+
+    // Review (ONLY if ordered)
+    app.post("/reviews", verifyToken, async (req, res) => {
+      const review = req.body;
+
+      const hasOrdered = await ordersCollection.findOne({
+        bookId: review.bookId,
+        userEmail: req.user.email,
+        paymentStatus: "paid",
+      });
+
+      if (!hasOrdered) {
+        return res.status(403).send({ message: "Order required to review" });
+      }
+
+      const result = await reviewsCollection.insertOne({
+        bookId: review.bookId,
+        rating: review.rating,
+        comment: review.comment,
+        userEmail: req.user.email,
+        createdAt: new Date(),
+      });
+
+      res.send(result);
+    });
+
+    // Get reviews for a book
+    app.get("/reviews/:bookId", async (req, res) => {
+      const bookId = req.params.bookId;
+
+      const result = await reviewsCollection.find({ bookId }).toArray();
+      res.send(result);
+    });
+
+    // Search & Sort Books
+    app.get("/books/search", async (req, res) => {
+      const { search, sort } = req.query;
+
+      let query = { status: "published" };
+
+      if (search) {
+        query.title = { $regex: search, $options: "i" };
+      }
+
+      let cursor = booksCollection.find(query);
+
+      if (sort === "asc") cursor = cursor.sort({ price: 1 });
+      if (sort === "desc") cursor = cursor.sort({ price: -1 });
+
+      const result = await cursor.toArray();
       res.send(result);
     });
   } finally {
