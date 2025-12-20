@@ -46,6 +46,36 @@ const verifyToken = async (req, res, next) => {
   }
 };
 
+const verifyAdmin = async (req, res, next) => {
+  const email = req.user.email;
+
+  const user = await client
+    .db("bookCourierDB")
+    .collection("users")
+    .findOne({ email });
+
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ message: "Admin access required" });
+  }
+
+  next();
+};
+
+const verifyLibrarian = async (req, res, next) => {
+  const email = req.user.email;
+
+  const user = await client
+    .db("bookCourierDB")
+    .collection("users")
+    .findOne({ email });
+
+  if (!user || user.role !== "librarian") {
+    return res.status(403).send({ message: "Librarian access required" });
+  }
+
+  next();
+};
+
 async function run() {
   try {
     await client.connect();
@@ -82,7 +112,7 @@ async function run() {
     });
 
     // add a book
-    app.post("/books", async (req, res) => {
+    app.post("/books", verifyToken, verifyLibrarian, async (req, res) => {
       const book = req.body;
 
       if (!book.title || !book.author || !book.price) {
@@ -149,52 +179,64 @@ async function run() {
     });
 
     // cancel order (only if pending)
-    app.patch("/orders/:id", async (req, res) => {
+    app.patch("/orders/:id", verifyToken, async (req, res) => {
       const id = req.params.id;
 
-      const query = {
+      const order = await ordersCollection.findOne({
         _id: new ObjectId(id),
-        orderStatus: "pending",
-      };
+      });
 
-      const updateDoc = {
-        $set: {
-          orderStatus: "cancelled",
-        },
-      };
+      if (!order || order.userEmail !== req.user.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
 
-      const result = await ordersCollection.updateOne(query, updateDoc);
+      if (order.orderStatus !== "pending") {
+        return res
+          .status(400)
+          .send({ message: "Only pending orders can be cancelled" });
+      }
+
+      const result = await ordersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { orderStatus: "cancelled" } }
+      );
+
       res.send(result);
     });
 
     // update order status (librarian)
-    app.patch("/orders/status/:id", async (req, res) => {
-      const id = req.params.id;
-      const { status } = req.body;
+    app.patch(
+      "/orders/status/:id",
+      verifyToken,
+      verifyLibrarian,
+      async (req, res) => {
+        const id = req.params.id;
+        const { status } = req.body;
 
-      const allowedStatus = ["shipped", "delivered"];
-      if (!allowedStatus.includes(status)) {
-        return res.status(400).send({ message: "Invalid status" });
+        const allowedStatus = ["shipped", "delivered"];
+        if (!allowedStatus.includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { orderStatus: status } };
+
+        const result = await ordersCollection.updateOne(query, updateDoc);
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Order not found" });
+        }
+
+        if (result.modifiedCount === 0) {
+          return res.send({
+            message: "Order status already set",
+            acknowledged: true,
+          });
+        }
+
+        res.send({ message: "Order status updated", acknowledged: true });
       }
-
-      const query = { _id: new ObjectId(id) };
-      const updateDoc = { $set: { orderStatus: status } };
-
-      const result = await ordersCollection.updateOne(query, updateDoc);
-
-      if (result.matchedCount === 0) {
-        return res.status(404).send({ message: "Order not found" });
-      }
-
-      if (result.modifiedCount === 0) {
-        return res.send({
-          message: "Order status already set",
-          acknowledged: true,
-        });
-      }
-
-      res.send({ message: "Order status updated", acknowledged: true });
-    });
+    );
 
     // Delete related orders
     app.delete("/books/:id", verifyToken, verifyAdmin, async (req, res) => {
